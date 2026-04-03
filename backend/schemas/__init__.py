@@ -1,0 +1,2 @@
+# schemas package
+# This file makes Python treat the schemas directory as a package

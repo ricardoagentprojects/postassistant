@@ -1,0 +1,11 @@
+{
+  "/_app": "pages/_app.js",
+  "/_error": "pages/_error.js",
+  "/api/waitlist": "pages/api/waitlist.js",
+  "/dashboard": "pages/dashboard.js",
+  "/dashboard_backup": "pages/dashboard_backup.js",
+  "/": "pages/index.js",
+  "/login": "pages/login.js",
+  "/register": "pages/register.js",
+  "/_document": "pages/_document.js"
+}
