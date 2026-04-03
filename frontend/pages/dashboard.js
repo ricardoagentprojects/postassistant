@@ -1,13 +1,5 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import {
-  CalendarIcon,
-  ChartBarIcon,
-  ClockIcon,
-  SparklesIcon,
-  UserCircleIcon,
-  ArrowRightOnRectangleIcon,
-} from '@heroicons/react/24/outline';
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
@@ -37,10 +29,10 @@ export default function Dashboard() {
   };
 
   const stats = [
-    { label: 'Posts Generated', value: '42', change: '+12%', icon: SparklesIcon, color: 'blue' },
-    { label: 'Scheduled', value: '18', change: '+5', icon: CalendarIcon, color: 'green' },
-    { label: 'Avg. Engagement', value: '4.8%', change: '+0.7%', icon: ChartBarIcon, color: 'purple' },
-    { label: 'Time Saved', value: '32h', change: 'This week', icon: ClockIcon, color: 'orange' },
+    { label: 'Posts Generated', value: '42', change: '+12%', color: 'blue' },
+    { label: 'Scheduled', value: '18', change: '+5', color: 'green' },
+    { label: 'Avg. Engagement', value: '4.8%', change: '+0.7%', color: 'purple' },
+    { label: 'Time Saved', value: '32h', change: 'This week', color: 'orange' },
   ];
 
   const recentContent = [
@@ -74,7 +66,7 @@ export default function Dashboard() {
           <div className="flex justify-between h-16">
             <div className="flex items-center">
               <div className="flex-shrink-0 flex items-center">
-                <SparklesIcon className="h-8 w-8 text-blue-600" />
+                <span className="text-2xl text-blue-600 font-bold">✨</span>
                 <span className="ml-2 text-xl font-bold text-gray-900">PostAssistant</span>
               </div>
               <div className="hidden md:ml-10 md:flex md:space-x-8">
@@ -87,7 +79,9 @@ export default function Dashboard() {
             <div className="flex items-center">
               <div className="flex items-center space-x-4">
                 <div className="flex items-center">
-                  <UserCircleIcon className="h-8 w-8 text-gray-400" />
+                  <div className="h-8 w-8 rounded-full bg-gray-200 flex items-center justify-center">
+                    <span className="text-gray-600 font-medium">{user?.name?.charAt(0) || user?.email?.charAt(0) || 'U'}</span>
+                  </div>
                   <div className="ml-3">
                     <p className="text-sm font-medium text-gray-900">{user?.name || user?.email}</p>
                     <p className="text-xs text-gray-500">Premium Plan</p>
@@ -95,9 +89,8 @@ export default function Dashboard() {
                 </div>
                 <button
                   onClick={handleLogout}
-                  className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                  className="px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50"
                 >
-                  <ArrowRightOnRectangleIcon className="h-5 w-5 mr-2" />
                   Sign Out
                 </button>
               </div>
@@ -227,4 +220,9 @@ export default function Dashboard() {
             <div className="mt-8 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg shadow p-6">
               <h3 className="text-lg font-medium text-gray-900 mb-3">💡 Pro Tip</h3>
               <p className="text-sm text-gray-700 mb-4">
-                Post consistently! Brands that publish 3+ times per week
+                Post consistently! Brands that publish 3+ times per week see 2.5x more engagement.
+              </p>
+              <button className="text-sm text-blue-600 hover:text-blue-800 font-medium">
+                Learn more →
+              </button>
+            </div>
