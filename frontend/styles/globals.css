@@ -2,18 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/* App is light-theme first: avoid inheriting white text on white cards when OS is in dark mode */
 :root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 214, 219, 220;
+  color-scheme: light;
+  --foreground-rgb: 17, 24, 39;
+  --background-start-rgb: 249, 250, 251;
   --background-end-rgb: 255, 255, 255;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --foreground-rgb: 255, 255, 255;
-    --background-start-rgb: 0, 0, 0;
-    --background-end-rgb: 0, 0, 0;
-  }
 }
 
 body {
