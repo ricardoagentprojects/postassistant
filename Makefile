@@ -84,11 +84,12 @@ format:
 
 clean:
 	@echo "Cleaning temporary files..."
-	find . -type f -name "*.pyc" -delete
-	find . -type d -name "__pycache__" -delete
-	find . -type f -name ".coverage" -delete
-	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+	@python -c "import pathlib, shutil; \
+		root = pathlib.Path('.'); \
+		[shutil.rmtree(p, ignore_errors=True) for p in root.rglob('__pycache__') if p.is_dir()]; \
+		[shutil.rmtree(p, ignore_errors=True) for p in root.rglob('.pytest_cache') if p.is_dir()]; \
+		[f.unlink() for f in root.rglob('*.pyc')]; \
+		print('Done.')"
 	@echo "✅ Clean completed"
 
 logs:

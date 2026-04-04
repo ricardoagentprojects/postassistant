@@ -5,7 +5,7 @@ from typing import Optional
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
-from database import get_db
+from database.session import get_db
 from schemas.models import Waitlist
 
 router = APIRouter()

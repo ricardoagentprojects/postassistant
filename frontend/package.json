@@ -4,12 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "NEXT_PUBLIC_API_URL=https://postassistant.onrender.com next build",
+    "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
+    "date-fns": "^3.6.0",
     "lucide-react": "^0.344.0",
     "next": "^14.2.0",
     "react": "^18.2.0",

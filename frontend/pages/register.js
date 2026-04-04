@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/router';
 import { UserPlus, User, Mail, Lock, Building, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
+import { getPublicApiBaseUrl } from '../lib/apiBase';
 
 export default function Register() {
   const [formData, setFormData] = useState({
@@ -44,12 +45,9 @@ export default function Register() {
     }
 
     try {
-      // Mock registration for now - will integrate with backend later
-      const response = await fetch('https://postassistant.onrender.com/api/v1/auth/register', {
+      const response = await fetch(`${getPublicApiBaseUrl()}/api/v1/auth/register`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: formData.name,
           email: formData.email,
@@ -59,41 +57,26 @@ export default function Register() {
         }),
       });
 
-      const data = await response.json();
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        setError('Invalid response from server');
+        return;
+      }
 
-      if (response.ok) {
+      if (response.ok && data.access_token && data.user) {
         setSuccess(true);
-        // Auto-login after successful registration
         localStorage.setItem('token', data.access_token);
         localStorage.setItem('user', JSON.stringify(data.user));
-        
-        // Redirect to dashboard after 2 seconds
-        setTimeout(() => {
-          router.push('/dashboard');
-        }, 2000);
-      } else {
-        setError(data.detail || 'Registration failed');
+        setTimeout(() => router.push('/dashboard'), 2000);
+        return;
       }
+
+      const detail = data?.detail;
+      setError(typeof detail === 'string' ? detail : 'Registration failed');
     } catch (err) {
-      // Mock successful registration for development
-      console.log('Using mock registration for development');
-      setSuccess(true);
-      
-      localStorage.setItem('token', 'mock-jwt-token');
-      localStorage.setItem('user', JSON.stringify({
-        id: Date.now(),
-        name: formData.name || 'New User',
-        email: formData.email || 'new@example.com',
-        company: formData.company || 'My Company',
-        role: formData.role || 'Owner',
-        plan: 'free',
-        created_at: new Date().toISOString(),
-      }));
-      
-      // Redirect to dashboard after 2 seconds
-      setTimeout(() => {
-        router.push('/dashboard');
-      }, 2000);
+      setError(err?.message || 'Network error — is the API running?');
     } finally {
       setLoading(false);
     }

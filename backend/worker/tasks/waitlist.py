@@ -1,7 +1,7 @@
 # Waitlist tasks
 import logging
-from datetime import datetime, timezone
-from typing import List
+import os
+
 from worker.celery_app import celery_app
 from database.session import SessionLocal
 from schemas.models import Waitlist
@@ -9,58 +9,51 @@ from services.email import send_waitlist_welcome_email
 
 logger = logging.getLogger(__name__)
 
+
 @celery_app.task(bind=True, max_retries=3)
-def send_waitlist_welcome_emails(self):
-    """Send welcome emails to new waitlist signups"""
+def send_welcome_emails(self):
+    """Send welcome emails to waitlist entries not yet marked notified."""
+    if not os.getenv("SMTP_USER") or not os.getenv("SMTP_PASSWORD"):
+        logger.debug("SMTP not configured; skipping waitlist welcome batch")
+        return
+
     db = SessionLocal()
     try:
-        # Find waitlist entries without welcome email sent
-        new_signups = db.query(Waitlist).filter(
-            Waitlist.welcome_email_sent == False,  # This column doesnt exist yet, but well add it
-            Waitlist.created_at >= datetime.now(timezone.utc) - timedelta(days=1)
-        ).all()
-        
-        logger.info(f"Found {len(new_signups)} new waitlist signups for welcome emails")
-        
-        for signup in new_signups:
+        pending = db.query(Waitlist).filter(Waitlist.notified.is_(False)).all()
+        logger.info("Waitlist welcome batch: %s pending", len(pending))
+
+        for signup in pending:
             try:
-                send_waitlist_welcome_email(signup)
-                signup.welcome_email_sent = True
-                signup.welcome_email_sent_at = datetime.now(timezone.utc)
-                db.commit()
-                logger.info(f"Sent welcome email to {signup.email}")
+                if send_waitlist_welcome_email(signup):
+                    signup.notified = True
+                    db.commit()
+                    logger.info("Welcome email sent to %s", signup.email)
+                else:
+                    logger.debug("Welcome email skipped (SMTP not configured) for %s", signup.email)
             except Exception as e:
-                logger.error(f"Failed to send welcome email to {signup.email}: {e}")
+                logger.exception("Failed welcome email for %s: %s", signup.email, e)
                 db.rollback()
-                
+
     except Exception as e:
-        logger.error(f"Error in send_waitlist_welcome_emails: {e}")
-        raise self.retry(exc=e, countdown=60)
+        logger.exception("send_welcome_emails failed: %s", e)
+        raise self.retry(exc=e, countdown=60) from e
     finally:
         db.close()
+
 
 @celery_app.task(bind=True, max_retries=3)
-def invite_waitlist_user(self, waitlist_id: str, user_id: str = None):
-    """Invite a waitlist user to create an account"""
+def invite_waitlist_user(self, waitlist_id: int):
+    """Placeholder: invite flow when product onboarding is ready."""
     db = SessionLocal()
     try:
-        waitlist_entry = db.query(Waitlist).filter(Waitlist.id == waitlist_id).first()
-        if not waitlist_entry:
-            logger.error(f"Waitlist entry {waitlist_id} not found")
+        entry = db.query(Waitlist).filter(Waitlist.id == waitlist_id).first()
+        if not entry:
+            logger.error("Waitlist id %s not found", waitlist_id)
             return
-        
-        # Mark as invited
-        waitlist_entry.invited_at = datetime.now(timezone.utc)
-        
-        # Send invitation email
-        # TODO: Implement invitation email
-        
+        logger.info("Invite placeholder for waitlist user %s", entry.email)
         db.commit()
-        logger.info(f"Invited waitlist user {waitlist_entry.email}")
-        
     except Exception as e:
-        logger.error(f"Error inviting waitlist user: {e}")
-        raise self.retry(exc=e, countdown=60)
+        logger.exception("invite_waitlist_user: %s", e)
+        raise self.retry(exc=e, countdown=60) from e
     finally:
         db.close()
-

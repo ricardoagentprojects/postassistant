@@ -1,8 +1,40 @@
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
 node_modules/
 frontend/node_modules/
-*.node
+
 .env
 .env.local
+.env.*.local
+*.node
+
 .DS_Store
 *.log
+Thumbs.db
+
+# Next.js
+.next/
+out/
+
+# Python / tests
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# SQLite local DB
+*.db
+
+# IDE
+.idea/
+.vscode/
+*.swp

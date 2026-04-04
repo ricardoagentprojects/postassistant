@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/router';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
+import { getPublicApiBaseUrl } from '../lib/apiBase';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -16,40 +17,31 @@ export default function Login() {
     setError('');
 
     try {
-      // Mock login for now - will integrate with backend later
-      const response = await fetch('https://postassistant.onrender.com/api/v1/auth/login', {
+      const response = await fetch(`${getPublicApiBaseUrl()}/api/v1/auth/login`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
 
-      const data = await response.json();
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        setError('Invalid response from server');
+        return;
+      }
 
-      if (response.ok) {
-        // Store token (mock for now)
+      if (response.ok && data.access_token && data.user) {
         localStorage.setItem('token', data.access_token);
         localStorage.setItem('user', JSON.stringify(data.user));
-        
-        // Redirect to dashboard
         router.push('/dashboard');
-      } else {
-        setError(data.detail || 'Login failed');
+        return;
       }
+
+      const detail = data?.detail;
+      setError(typeof detail === 'string' ? detail : 'Login failed');
     } catch (err) {
-      // Mock successful login for development
-      console.log('Using mock login for development');
-      localStorage.setItem('token', 'mock-jwt-token');
-      localStorage.setItem('user', JSON.stringify({
-        id: 1,
-        email: email || 'demo@example.com',
-        name: 'Demo User',
-        plan: 'free'
-      }));
-      
-      // Redirect to dashboard
-      router.push('/dashboard');
+      setError(err?.message || 'Network error — is the API running?');
     } finally {
       setLoading(false);
     }

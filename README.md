@@ -92,6 +92,8 @@ postassistant/
 └── README.md                # This file
 ```
 
+Para a árvore completa de ficheiros (incluindo scripts na raiz e notas), vê também **`STRUCTURE.md`** na raiz do repositório.
+
 ## 🔧 Development Commands
 
 ```bash

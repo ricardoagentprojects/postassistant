@@ -9,8 +9,9 @@ import os
 # Add backend directory to path
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-# Import models
-from schemas.models import Base
+# Import Base and register all models on metadata
+from schemas import models as _models  # noqa: F401
+from database.session import Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

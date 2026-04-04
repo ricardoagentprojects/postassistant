@@ -1,19 +1,19 @@
-# Content generation API endpoints
+# Content generation, scheduling, and calendar API
+from datetime import date, datetime, time, timedelta, timezone
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
-from typing import Optional, List
-import uuid
-from datetime import datetime, timezone
 
 from database.session import get_db
-from schemas.models import Content, User
-# Use fixed version that always works
-from services.openai_fixed import generate_content
+from schemas.models import Content
+from services.openai import generate_content, generate_content_variations, refine_content
 
 router = APIRouter()
 
-# Pydantic models
+
 class ContentGenerationRequest(BaseModel):
     platform: str = Field(..., description="twitter, instagram, linkedin")
     content_type: str = Field(..., description="post, thread, story, reel")
@@ -22,9 +22,10 @@ class ContentGenerationRequest(BaseModel):
     length: Optional[str] = Field("medium", description="short, medium, long")
     hashtags: Optional[List[str]] = Field(default_factory=list)
     emojis: Optional[bool] = Field(True, description="Include emojis")
-    
+
+
 class ContentGenerationResponse(BaseModel):
-    id: uuid.UUID
+    id: int
     content: str
     platform: str
     content_type: str
@@ -32,8 +33,9 @@ class ContentGenerationResponse(BaseModel):
     model: Optional[str] = None
     token_count: Optional[int] = None
 
+
 class ContentListResponse(BaseModel):
-    id: uuid.UUID
+    id: int
     content: str
     platform: str
     content_type: str
@@ -41,212 +43,378 @@ class ContentListResponse(BaseModel):
     created_at: datetime
     scheduled_for: Optional[datetime] = None
     published_at: Optional[datetime] = None
+    prompt: Optional[str] = None
 
 
+class ContentStatsResponse(BaseModel):
+    total_posts: int
+    drafts: int
+    scheduled: int
+    published: int
+    generated_this_week: int
 
-@router.post("/schedule")
-async def schedule_content(
-    content_id: uuid.UUID,
-    schedule_time: datetime,
+
+class CalendarItemResponse(BaseModel):
+    id: int
+    preview: str
+    platform: str
+    content_type: str
+    status: str
+    scheduled_for: datetime
+    schedule_timezone: Optional[str] = None
+
+
+class ScheduleRequest(BaseModel):
+    content_id: int
+    schedule_time: datetime
+    timezone: str = Field("UTC", description="IANA timezone e.g. Europe/Lisbon")
+
+
+class RescheduleRequest(BaseModel):
+    schedule_time: datetime
+    timezone: Optional[str] = None
+
+
+class VariationsRequest(BaseModel):
+    base_content: str
+    platform: str = "instagram"
+    num_variations: int = Field(3, ge=1, le=5)
+
+
+class VariationItem(BaseModel):
+    content: str
+    tone: Optional[str] = None
+    hashtags: List[str] = Field(default_factory=list)
+
+
+class VariationsResponse(BaseModel):
+    variations: List[VariationItem]
+
+
+class RefineRequest(BaseModel):
+    instruction: str = Field(..., min_length=3)
+    text: Optional[str] = None
+    content_id: Optional[int] = None
+    platform: str = "instagram"
+
+    @model_validator(mode="after")
+    def need_source(self):
+        if not self.text and self.content_id is None:
+            raise ValueError("Provide text or content_id")
+        return self
+
+
+class RefineResponse(BaseModel):
+    content: str
+    model: Optional[str] = None
+
+
+@router.get("/stats", response_model=ContentStatsResponse)
+async def content_stats(db: Session = Depends(get_db)):
+    base = db.query(Content).filter(Content.status != "deleted")
+    now = datetime.now(timezone.utc)
+    week_ago = now - timedelta(days=7)
+
+    total_posts = base.count()
+    drafts = base.filter(Content.status == "draft").count()
+    scheduled = base.filter(Content.status == "scheduled").count()
+    published = base.filter(Content.status == "published").count()
+    generated_this_week = base.filter(Content.created_at >= week_ago).count()
+
+    return ContentStatsResponse(
+        total_posts=total_posts,
+        drafts=drafts,
+        scheduled=scheduled,
+        published=published,
+        generated_this_week=generated_this_week,
+    )
+
+
+@router.get("/calendar", response_model=List[CalendarItemResponse])
+async def calendar_range(
+    from_date: date,
+    to_date: date,
     db: Session = Depends(get_db),
-    # current_user: dict = Depends(get_current_user)  # TODO: Add auth
 ):
-    """
-    Schedule content for posting
-    """
-    content = db.query(Content).filter(Content.id == content_id).first()
-    if not content:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Content not found"
+    if to_date < from_date:
+        raise HTTPException(status_code=400, detail="to_date must be on or after from_date")
+
+    start = datetime.combine(from_date, time.min, tzinfo=timezone.utc)
+    end = datetime.combine(to_date, time.max, tzinfo=timezone.utc)
+
+    rows = (
+        db.query(Content)
+        .filter(
+            and_(
+                Content.scheduled_for.isnot(None),
+                Content.scheduled_for >= start,
+                Content.scheduled_for <= end,
+                Content.status == "scheduled",
+            )
         )
-    
-    # Update content status
-    content.status = "scheduled"
-    content.scheduled_for = schedule_time
-    content.updated_at = datetime.now(timezone.utc)
-    
-    db.commit()
-    
-    return {
-        "message": "Content scheduled successfully",
-        "content_id": str(content_id),
-        "scheduled_for": schedule_time.isoformat(),
-        "status": "scheduled"
-    }
+        .order_by(Content.scheduled_for.asc())
+        .all()
+    )
+
+    return [
+        CalendarItemResponse(
+            id=c.id,
+            preview=(c.body[:120] + "…") if len(c.body) > 120 else c.body,
+            platform=c.platform,
+            content_type=c.content_type,
+            status=c.status,
+            scheduled_for=c.scheduled_for,
+            schedule_timezone=c.schedule_timezone,
+        )
+        for c in rows
+    ]
+
 
 @router.post("/generate", response_model=ContentGenerationResponse)
 async def generate_content_endpoint(
     request: ContentGenerationRequest,
     db: Session = Depends(get_db),
-    # current_user: dict = Depends(get_current_user)  # TODO: Add auth
 ):
-    """
-    Generate AI-powered content for social media
-    """
-    # For now, use a mock user (development only)
-    user_id = uuid.uuid4()  # TODO: Replace with actual user ID from auth
-    
-    # Generate content using OpenAI
     try:
-        generated = generate_content(
+        generated = await generate_content(
             platform=request.platform,
             content_type=request.content_type,
             topic=request.topic,
-            tone=request.tone,
-            length=request.length,
+            tone=request.tone or "professional",
+            length=request.length or "medium",
             hashtags=request.hashtags,
-            include_emojis=request.emojis
+            include_emojis=request.emojis if request.emojis is not None else True,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Content generation failed: {str(e)}"
-        )
-    
-    # Save to database
+            detail="Content generation failed",
+        ) from e
+
+    now = datetime.now(timezone.utc)
     content_entry = Content(
-        user_id=user_id,
+        user_id=None,
         platform=request.platform,
         content_type=request.content_type,
-        content=generated["content"],
+        body=generated["content"],
         prompt=request.topic,
         model=generated.get("model"),
-        temperature=70,
+        temperature=0.7,
         status="draft",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
+        created_at=now,
+        updated_at=now,
     )
-    
     db.add(content_entry)
     db.commit()
     db.refresh(content_entry)
-    
+
     return ContentGenerationResponse(
         id=content_entry.id,
-        content=content_entry.content,
+        content=content_entry.body,
         platform=content_entry.platform,
         content_type=content_entry.content_type,
         generated_at=content_entry.created_at,
         model=content_entry.model,
-        token_count=generated.get("token_count")
+        token_count=generated.get("total_tokens"),
     )
+
+
+@router.post("/variations", response_model=VariationsResponse)
+async def create_variations(request: VariationsRequest):
+    try:
+        raw = await generate_content_variations(
+            request.base_content,
+            request.platform,
+            request.num_variations,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not generate variations",
+        ) from e
+
+    items = [
+        VariationItem(
+            content=v.get("content", ""),
+            tone=v.get("tone"),
+            hashtags=list(v.get("hashtags") or []),
+        )
+        for v in raw
+        if v.get("content")
+    ]
+    return VariationsResponse(variations=items)
+
+
+@router.post("/refine", response_model=RefineResponse)
+async def refine_copy(request: RefineRequest, db: Session = Depends(get_db)):
+    text = request.text
+    if request.content_id is not None:
+        row = db.query(Content).filter(Content.id == request.content_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Content not found")
+        text = row.body
+
+    if not text:
+        raise HTTPException(status_code=400, detail="No text to refine")
+
+    try:
+        out = await refine_content(text, request.instruction, request.platform)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Refine failed",
+        ) from e
+
+    return RefineResponse(content=out["content"], model=out.get("model"))
+
+
+@router.post("/schedule")
+async def schedule_content(request: ScheduleRequest, db: Session = Depends(get_db)):
+    content = db.query(Content).filter(Content.id == request.content_id).first()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content not found")
+
+    st = request.schedule_time
+    if st.tzinfo is None:
+        st = st.replace(tzinfo=timezone.utc)
+
+    content.status = "scheduled"
+    content.scheduled_for = st
+    content.schedule_timezone = request.timezone
+    content.updated_at = datetime.now(timezone.utc)
+    content.notification_sent = False
+
+    db.commit()
+
+    return {
+        "message": "Content scheduled successfully",
+        "content_id": request.content_id,
+        "scheduled_for": st.isoformat(),
+        "timezone": request.timezone,
+        "status": "scheduled",
+    }
+
+
+@router.patch("/{content_id}/schedule")
+async def reschedule_content(
+    content_id: int,
+    body: RescheduleRequest,
+    db: Session = Depends(get_db),
+):
+    content = db.query(Content).filter(Content.id == content_id).first()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content not found")
+
+    st = body.schedule_time
+    if st.tzinfo is None:
+        st = st.replace(tzinfo=timezone.utc)
+
+    content.scheduled_for = st
+    content.status = "scheduled"
+    if body.timezone:
+        content.schedule_timezone = body.timezone
+    content.updated_at = datetime.now(timezone.utc)
+    content.notification_sent = False
+
+    db.commit()
+
+    return {
+        "message": "Rescheduled",
+        "content_id": content_id,
+        "scheduled_for": st.isoformat(),
+    }
+
 
 @router.get("/list", response_model=List[ContentListResponse])
 async def list_user_content(
     skip: int = 0,
     limit: int = 50,
     status_filter: Optional[str] = None,
+    full: bool = False,
     db: Session = Depends(get_db),
-    # current_user: dict = Depends(get_current_user)  # TODO: Add auth
 ):
-    """
-    List user's generated content
-    """
-    # For now, return all content (development)
-    query = db.query(Content)
-    
+    query = db.query(Content).filter(Content.status != "deleted")
+
     if status_filter:
         query = query.filter(Content.status == status_filter)
-    
+
     contents = query.order_by(Content.created_at.desc()).offset(skip).limit(limit).all()
-    
+
+    def body_preview(c: Content) -> str:
+        if full:
+            return c.body
+        return c.body[:100] + "..." if len(c.body) > 100 else c.body
+
     return [
         ContentListResponse(
-            id=content.id,
-            content=content.content[:100] + "..." if len(content.content) > 100 else content.content,
-            platform=content.platform,
-            content_type=content.content_type,
-            status=content.status,
-            created_at=content.created_at,
-            scheduled_for=content.scheduled_for,
-            published_at=content.published_at
+            id=c.id,
+            content=body_preview(c),
+            platform=c.platform,
+            content_type=c.content_type,
+            status=c.status,
+            created_at=c.created_at,
+            scheduled_for=c.scheduled_for,
+            published_at=c.published_at,
+            prompt=c.prompt,
         )
-        for content in contents
+        for c in contents
     ]
 
+
 @router.get("/{content_id}")
-async def get_content(
-    content_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    # current_user: dict = Depends(get_current_user)  # TODO: Add auth
-):
-    """
-    Get specific content by ID
-    """
+async def get_content(content_id: int, db: Session = Depends(get_db)):
     content = db.query(Content).filter(Content.id == content_id).first()
     if not content:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Content not found"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content not found")
+
     return {
         "id": content.id,
-        "content": content.content,
+        "content": content.body,
         "platform": content.platform,
         "content_type": content.content_type,
         "status": content.status,
         "created_at": content.created_at.isoformat() if content.created_at else None,
         "scheduled_for": content.scheduled_for.isoformat() if content.scheduled_for else None,
+        "schedule_timezone": content.schedule_timezone,
         "published_at": content.published_at.isoformat() if content.published_at else None,
         "engagement_score": content.engagement_score,
         "model": content.model,
-        "prompt": content.prompt
+        "prompt": content.prompt,
     }
+
 
 @router.post("/{content_id}/publish")
-async def publish_content(
-    content_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    # current_user: dict = Depends(get_current_user)  # TODO: Add auth
-):
-    """
-    Mark content as published (simulated - actual publishing comes later)
-    """
+async def publish_content(content_id: int, db: Session = Depends(get_db)):
     content = db.query(Content).filter(Content.id == content_id).first()
     if not content:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Content not found"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content not found")
+
+    now = datetime.now(timezone.utc)
     content.status = "published"
-    content.published_at = datetime.now(timezone.utc)
-    content.updated_at = datetime.now(timezone.utc)
-    
+    content.published_at = now
+    content.updated_at = now
+
     db.commit()
-    
+
     return {
         "message": "Content published successfully",
-        "content_id": str(content_id),
+        "content_id": content_id,
         "published_at": content.published_at.isoformat(),
-        "status": "published"
+        "status": "published",
     }
 
+
 @router.delete("/{content_id}")
-async def delete_content(
-    content_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    # current_user: dict = Depends(get_current_user)  # TODO: Add auth
-):
-    """
-    Delete content (soft delete - update status)
-    """
+async def delete_content(content_id: int, db: Session = Depends(get_db)):
     content = db.query(Content).filter(Content.id == content_id).first()
     if not content:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Content not found"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content not found")
+
     content.status = "deleted"
     content.updated_at = datetime.now(timezone.utc)
-    
+
     db.commit()
-    
-    return {
-        "message": "Content deleted successfully",
-        "content_id": str(content_id),
-        "status": "deleted"
-    }
+
+    return {"message": "Content deleted successfully", "content_id": content_id, "status": "deleted"}

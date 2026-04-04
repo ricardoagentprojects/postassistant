@@ -5,29 +5,23 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { email, name, company, role, platform, budget, referral } = req.body;
+    const { email, name, company, role } = req.body;
 
-    // Validate email
     if (!email || !email.includes('@')) {
       return res.status(400).json({ error: 'Valid email is required' });
     }
 
-    // Call backend API
-    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'https://postassistant.onrender.com';
-    
+    const backendUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/+$/, '');
+
+    const businessType = [company, role].filter(Boolean).join(' · ') || null;
+
     const response = await fetch(`${backendUrl}/api/v1/waitlist/join`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         email,
         name: name || null,
-        company: company || null,
-        role: role || null,
-        primary_platform: platform || null,
-        monthly_budget: budget || null,
-        referral_source: referral || null,
+        business_type: businessType,
       }),
     });
 
@@ -37,9 +31,6 @@ export default async function handler(req, res) {
     }
 
     const data = await response.json();
-
-    // Log to console for debugging
-    console.log('Waitlist signup successful:', { email, data });
 
     return res.status(200).json({
       success: true,

@@ -1,13 +1,16 @@
-# Authentication API endpoints
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
-from typing import Optional
-import uuid
+"""Authentication API — JWT, passwords via passlib, aligned with frontend session shape."""
+
+import os
 from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt
+from jose.exceptions import ExpiredSignatureError, JWTError
 from passlib.context import CryptContext
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from sqlalchemy.orm import Session
 
 from database.session import get_db
 from schemas.models import User
@@ -16,298 +19,276 @@ router = APIRouter()
 security = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# JWT configuration
-SECRET_KEY = "dev-secret-key-change-in-production"  # TODO: Move to env
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+SECRET_KEY = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    if os.getenv("ENVIRONMENT") == "production":
+        raise RuntimeError("JWT_SECRET or SECRET_KEY must be set in production")
+    SECRET_KEY = "dev-only-change-me"
 
-# Pydantic models
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "30"))
+
+
 class UserSignupRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=8)
     full_name: Optional[str] = None
+    company: Optional[str] = None
+    role: Optional[str] = None
+
 
 class UserLoginRequest(BaseModel):
     email: EmailStr
     password: str
 
-class TokenResponse(BaseModel):
+
+class RegisterRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+    company: Optional[str] = None
+    role: Optional[str] = None
+
+
+class UserPublic(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    name: Optional[str] = None
+    company: Optional[str] = None
+    role: Optional[str] = None
+    plan: str = "free"
+    created_at: datetime
+
+
+class SessionResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
-    user_id: uuid.UUID
-    email: str
+    user: UserPublic
+
 
 class UserProfileResponse(BaseModel):
-    id: uuid.UUID
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
     email: str
     full_name: Optional[str]
+    company: Optional[str]
+    role: Optional[str]
     subscription_tier: str
     monthly_post_limit: int
     used_posts_this_month: int
     created_at: datetime
 
-# Utility functions
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
+
 
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    
+    expire = datetime.now(timezone.utc) + (
+        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def _user_public(user: User) -> UserPublic:
+    return UserPublic(
+        id=user.id,
+        email=user.email,
+        name=user.full_name,
+        company=user.company,
+        role=user.role,
+        plan=user.subscription_tier or "free",
+        created_at=user.created_at,
+    )
+
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> User:
-    """
-    Get current user from JWT token
-    """
     token = credentials.credentials
-    
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        
-        if user_id is None:
+        sub = payload.get("sub")
+        if sub is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication credentials"
+                detail="Invalid authentication credentials",
             )
-        
-    except jwt.ExpiredSignatureError:
+        user_id = int(sub)
+    except ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired"
+            detail="Token has expired",
         )
-    except jwt.JWTError:
+    except (JWTError, ValueError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
+            detail="Invalid or expired token",
         )
-    
-    user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+
+    user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
+            detail="User not found",
         )
-    
     return user
 
-# API endpoints
-@router.post("/signup", response_model=TokenResponse)
-async def signup(
-    request: UserSignupRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Create new user account
-    """
-    # Check if user already exists
-    existing_user = db.query(User).filter(User.email == request.email).first()
-    if existing_user:
+
+def _issue_session(user: User) -> SessionResponse:
+    access_token = create_access_token(
+        data={"sub": str(user.id)},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+    return SessionResponse(
+        access_token=access_token,
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=_user_public(user),
+    )
+
+
+@router.post("/signup", response_model=SessionResponse)
+async def signup(request: UserSignupRequest, db: Session = Depends(get_db)):
+    if db.query(User).filter(User.email == request.email).first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            detail="Email already registered",
         )
-    
-    # Create new user
-    hashed_password = get_password_hash(request.password)
-    
+
+    now = datetime.now(timezone.utc)
     user = User(
         email=request.email,
-        hashed_password=hashed_password,
+        hashed_password=get_password_hash(request.password),
         full_name=request.full_name,
+        company=request.company,
+        role=request.role,
         subscription_tier="free",
         subscription_status="active",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
+        created_at=now,
+        updated_at=now,
     )
-    
     db.add(user)
     db.commit()
     db.refresh(user)
-    
-    # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": str(user.id)},
-        expires_delta=access_token_expires
-    )
-    
-    return TokenResponse(
-        access_token=access_token,
-        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user_id=user.id,
-        email=user.email
-    )
+    return _issue_session(user)
 
-@router.post("/login", response_model=TokenResponse)
-async def login(
-    request: UserLoginRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Login user and return JWT token
-    """
+
+@router.post("/register", response_model=SessionResponse)
+async def register(request: RegisterRequest, db: Session = Depends(get_db)):
+    signup_payload = UserSignupRequest(
+        email=request.email,
+        password=request.password,
+        full_name=request.name,
+        company=request.company,
+        role=request.role,
+    )
+    return await signup(signup_payload, db)
+
+
+@router.post("/login", response_model=SessionResponse)
+async def login(request: UserLoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == request.email).first()
-    
     if not user or not verify_password(request.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
+            detail="Incorrect email or password",
         )
-    
-    # Update last login
+
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
-    
-    # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": str(user.id)},
-        expires_delta=access_token_expires
-    )
-    
-    return TokenResponse(
-        access_token=access_token,
-        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user_id=user.id,
-        email=user.email
-    )
+
+    return _issue_session(user)
+
+
+@router.get("/me", response_model=UserPublic)
+async def me(current_user: User = Depends(get_current_user)):
+    return _user_public(current_user)
+
 
 @router.get("/profile", response_model=UserProfileResponse)
-async def get_profile(
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Get current user profile
-    """
+async def get_profile(current_user: User = Depends(get_current_user)):
     return UserProfileResponse(
         id=current_user.id,
         email=current_user.email,
         full_name=current_user.full_name,
+        company=current_user.company,
+        role=current_user.role,
         subscription_tier=current_user.subscription_tier,
         monthly_post_limit=current_user.monthly_post_limit,
         used_posts_this_month=current_user.used_posts_this_month,
-        created_at=current_user.created_at
+        created_at=current_user.created_at,
     )
 
-@router.post("/refresh")
-async def refresh_token(
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Refresh JWT token
-    """
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": str(current_user.id)},
-        expires_delta=access_token_expires
-    )
-    
-    return TokenResponse(
-        access_token=access_token,
-        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user_id=current_user.id,
-        email=current_user.email
-    )
+
+@router.post("/refresh", response_model=SessionResponse)
+async def refresh_token(current_user: User = Depends(get_current_user)):
+    return _issue_session(current_user)
+
 
 @router.post("/logout")
 async def logout():
-    """
-    Logout user (client-side token invalidation)
-    """
     return {"message": "Successfully logged out"}
 
+
 @router.post("/password/reset-request")
-async def request_password_reset(
-    email: EmailStr,
-    db: Session = Depends(get_db)
-):
-    """
-    Request password reset (mock for now)
-    """
-    user = db.query(User).filter(User.email == email).first()
-    
-    if user:
-        # In production, send email with reset link
-        # For now, just return success message
-        return {
-            "message": "If an account exists with this email, a reset link has been sent",
-            "email_sent": True
-        }
-    
-    # Still return success to prevent email enumeration
+async def request_password_reset(email: EmailStr, db: Session = Depends(get_db)):
+    db.query(User).filter(User.email == email).first()
     return {
         "message": "If an account exists with this email, a reset link has been sent",
-        "email_sent": True
+        "email_sent": True,
     }
+
 
 @router.post("/password/reset")
-async def reset_password(
-    token: str,
-    new_password: str,
-    db: Session = Depends(get_db)
-):
-    """
-    Reset password with token (mock for now)
-    """
-    # In production, validate token and update password
-    # For now, return success message
-    return {
-        "message": "Password reset successfully",
-        "success": True
-    }
+async def reset_password(token: str, new_password: str, db: Session = Depends(get_db)):
+    return {"message": "Password reset successfully", "success": True}
 
-# Development-only endpoints
+
 @router.post("/dev/create-test-user")
 async def create_test_user(db: Session = Depends(get_db)):
-    """
-    Create a test user for development (remove in production)
-    """
+    if os.getenv("ENVIRONMENT") == "production":
+        raise HTTPException(status_code=404, detail="Not found")
+
     test_email = "test@postassistant.com"
-    
     existing = db.query(User).filter(User.email == test_email).first()
     if existing:
+        token = create_access_token(data={"sub": str(existing.id)})
         return {
             "message": "Test user already exists",
-            "user_id": str(existing.id),
-            "email": existing.email
+            "user_id": existing.id,
+            "email": existing.email,
+            "access_token": token,
         }
-    
+
+    now = datetime.now(timezone.utc)
     user = User(
         email=test_email,
         hashed_password=get_password_hash("testpassword123"),
         full_name="Test User",
         subscription_tier="pro",
         subscription_status="active",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
+        created_at=now,
+        updated_at=now,
     )
-    
     db.add(user)
     db.commit()
     db.refresh(user)
-    
-    # Create token for immediate use
-    access_token = create_access_token(data={"sub": str(user.id)})
-    
+    token = create_access_token(data={"sub": str(user.id)})
     return {
         "message": "Test user created",
-        "user_id": str(user.id),
+        "user_id": user.id,
         "email": user.email,
-        "access_token": access_token,
-        "password": "testpassword123"  # Only for development!
+        "access_token": token,
+        "password": "testpassword123",
     }

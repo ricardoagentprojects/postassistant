@@ -1,11 +1,19 @@
 # OpenAI integration for content generation
+import logging
 import os
+import re
 from typing import Dict, List, Optional
-import openai
+
 from openai import AsyncOpenAI
 
-# Initialize OpenAI client
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "sk-test"))
+logger = logging.getLogger(__name__)
+
+
+def _openai_client() -> Optional[AsyncOpenAI]:
+    key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not key:
+        return None
+    return AsyncOpenAI(api_key=key)
 
 # Platform-specific prompts
 PLATFORM_PROMPTS = {
@@ -86,8 +94,12 @@ async def generate_content(
     Follow platform best practices and guidelines.
     The content should be ready to post - no markdown, just plain text."""
     
+    client = _openai_client()
+    if client is None:
+        logger.info("OPENAI_API_KEY not set; using mock content generator")
+        return get_mock_content(platform, content_type, topic, tone, hashtags)
+
     try:
-        # Call OpenAI API
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",  # Can upgrade to gpt-4 later
             messages=[
@@ -118,13 +130,7 @@ async def generate_content(
         }
         
     except Exception as e:
-        # Always fallback to mock in development, or if OpenAI fails
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"OpenAI API error: {e}")
-        print(f"Error details: {error_details}")
-        print(f"API Key present: {'OPENAI_API_KEY' in os.environ}")
-        print(f"Environment: {os.getenv('ENVIRONMENT', 'production')}")
+        logger.warning("OpenAI request failed, falling back to mock: %s", e, exc_info=True)
         return get_mock_content(platform, content_type, topic, tone, hashtags)
 
 def get_mock_content(
@@ -188,23 +194,99 @@ async def analyze_content_engagement(
         "optimal_posting_times": ["09:00", "12:00", "17:00"]  # Platform-specific
     }
 
+def _mock_variations(base_content: str, platform: str, num_variations: int) -> List[Dict]:
+    tones = ["casual", "professional", "enthusiastic"]
+    return [
+        {
+            "content": f"{base_content}\n\n— Alt. {i + 1} ({tones[i % 3]} angle for {platform})",
+            "tone": tones[i % 3],
+            "hashtags": [f"v{i + 1}", platform],
+        }
+        for i in range(num_variations)
+    ]
+
+
 async def generate_content_variations(
     base_content: str,
     platform: str,
-    num_variations: int = 3
+    num_variations: int = 3,
 ) -> List[Dict]:
-    """
-    Generate variations of existing content
-    """
-    # Mock implementation for now
-    variations = []
-    
-    for i in range(num_variations):
-        variations.append({
-            "content": f"Variation {i+1}: {base_content} (alternative version)",
-            "tone": ["casual", "professional", "enthusiastic"][i % 3],
-            "hashtags": [f"variation{i+1}", platform, "content"],
-            "engagement_score": 70 + (i * 5)  # Mock score
-        })
-    
-    return variations
+    client = _openai_client()
+    if client is None:
+        return _mock_variations(base_content, platform, num_variations)
+
+    try:
+        prompt = (
+            f"Platform: {platform}\n\nOriginal post:\n{base_content}\n\n"
+            f"Write exactly {num_variations} clearly different alternative versions. "
+            "Number each 1. 2. 3. etc. Keep each ready to post (plain text, no markdown headers)."
+        )
+        response = await client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You rewrite social posts for clarity and engagement. Follow the numbering format.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.85,
+            max_tokens=900,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        parts = []
+        blocks = re.split(r"\n\s*(?=\d+\.\s)", text)
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+            cleaned = re.sub(r"^\d+\.\s*", "", block, count=1).strip()
+            if cleaned:
+                parts.append({"content": cleaned, "tone": None, "hashtags": []})
+        if len(parts) >= num_variations:
+            return parts[:num_variations]
+        if len(parts) > 0:
+            return parts
+    except Exception as e:
+        logger.warning("Variation generation failed, using mock: %s", e, exc_info=True)
+
+    return _mock_variations(base_content, platform, num_variations)
+
+
+async def refine_content(
+    text: str,
+    instruction: str,
+    platform: str,
+) -> Dict:
+    """Apply user instruction to improve or adjust copy."""
+    client = _openai_client()
+    if client is None:
+        return {
+            "content": f"{text}\n\n[Adjusted: {instruction}]",
+            "model": "mock-refine",
+        }
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"You edit {platform} social copy. Output only the final post text, no quotes.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Original:\n{text}\n\nInstruction:\n{instruction}",
+                },
+            ],
+            temperature=0.6,
+            max_tokens=600,
+        )
+        out = (response.choices[0].message.content or "").strip()
+        return {"content": out, "model": response.model}
+    except Exception as e:
+        logger.warning("Refine failed, returning stitched mock: %s", e, exc_info=True)
+        return {
+            "content": f"{text}\n\n[Adjusted: {instruction}]",
+            "model": "mock-refine",
+        }

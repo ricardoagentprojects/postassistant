@@ -38,8 +38,10 @@ services:
     environment:
       - DATABASE_URL=postgresql://postassistant:postassistant_dev@postgres:5432/postassistant_dev
       - REDIS_URL=redis://redis:6379/0
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-test}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-change-me}
       - SECRET_KEY=${SECRET_KEY:-dev-secret-key}
+      - ENVIRONMENT=development
     volumes:
       - ./backend:/app
     depends_on:
@@ -57,13 +59,28 @@ services:
     environment:
       - DATABASE_URL=postgresql://postassistant:postassistant_dev@postgres:5432/postassistant_dev
       - REDIS_URL=redis://redis:6379/0
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-test}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-change-me}
     volumes:
       - ./backend:/app
     depends_on:
       - postgres
       - redis
     command: celery -A worker.celery_app worker --loglevel=info
+
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    environment:
+      - DATABASE_URL=postgresql://postassistant:postassistant_dev@postgres:5432/postassistant_dev
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - postgres
+      - redis
+    command: celery -A worker.celery_app beat --loglevel=info
 
   # Frontend (Next.js)
   frontend:
