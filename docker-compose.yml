@@ -42,6 +42,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-change-me}
       - SECRET_KEY=${SECRET_KEY:-dev-secret-key}
       - ENVIRONMENT=development
+      - FRONTEND_URL=http://localhost:3000
     volumes:
       - ./backend:/app
     depends_on:

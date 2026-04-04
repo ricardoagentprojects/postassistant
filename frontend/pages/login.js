@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/router';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
-import { getPublicApiBaseUrl } from '../lib/apiBase';
+import { getPublicApiBaseUrl, apiNetworkErrorMessage } from '../lib/apiBase';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -41,7 +41,7 @@ export default function Login() {
       const detail = data?.detail;
       setError(typeof detail === 'string' ? detail : 'Login failed');
     } catch (err) {
-      setError(err?.message || 'Network error — is the API running?');
+      setError(apiNetworkErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -134,9 +134,9 @@ export default function Login() {
               </div>
 
               <div className="text-sm">
-                <a href="#" className="font-medium text-blue-600 hover:text-blue-500">
+                <Link href="/forgot-password" className="font-medium text-blue-600 hover:text-blue-500">
                   Forgot your password?
-                </a>
+                </Link>
               </div>
             </div>
 
@@ -180,13 +180,13 @@ export default function Login() {
           <div className="mt-6 text-center text-sm text-gray-700">
             <p>
               By signing in, you agree to our{' '}
-              <a href="#" className="font-medium text-blue-600 hover:text-blue-500">
+              <Link href="/terms" className="font-medium text-blue-600 hover:text-blue-500">
                 Terms of Service
-              </a>{' '}
+              </Link>{' '}
               and{' '}
-              <a href="#" className="font-medium text-blue-600 hover:text-blue-500">
+              <Link href="/privacy" className="font-medium text-blue-600 hover:text-blue-500">
                 Privacy Policy
-              </a>
+              </Link>
             </p>
           </div>
         </div>

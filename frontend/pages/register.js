@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/router';
 import { UserPlus, User, Mail, Lock, Building, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
-import { getPublicApiBaseUrl } from '../lib/apiBase';
+import { getPublicApiBaseUrl, apiNetworkErrorMessage } from '../lib/apiBase';
 
 export default function Register() {
   const [formData, setFormData] = useState({
@@ -76,7 +76,7 @@ export default function Register() {
       const detail = data?.detail;
       setError(typeof detail === 'string' ? detail : 'Registration failed');
     } catch (err) {
-      setError(err?.message || 'Network error — is the API running?');
+      setError(apiNetworkErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -272,13 +272,13 @@ export default function Register() {
               />
               <label htmlFor="terms" className="ml-2 block text-sm text-gray-900">
                 I agree to the{' '}
-                <a href="#" className="font-medium text-blue-600 hover:text-blue-500">
+                <Link href="/terms" className="font-medium text-blue-600 hover:text-blue-500">
                   Terms of Service
-                </a>{' '}
+                </Link>{' '}
                 and{' '}
-                <a href="#" className="font-medium text-blue-600 hover:text-blue-500">
+                <Link href="/privacy" className="font-medium text-blue-600 hover:text-blue-500">
                   Privacy Policy
-                </a>
+                </Link>
               </label>
             </div>
 

@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:full": "concurrently -k -n next,api -c cyan,magenta \"next dev\" \"npm run start:api\"",
+    "start:api": "cd ../backend && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
@@ -18,6 +20,7 @@
   },
   "devDependencies": {
     "autoprefixer": "^10.0.0",
+    "concurrently": "^9.2.1",
     "eslint": "^8.57.0",
     "eslint-config-next": "^14.0.0",
     "postcss": "^8.0.0",

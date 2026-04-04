@@ -3,6 +3,7 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from database.session import get_db
 from schemas.models import User
+from services.email import send_password_reset_email
 
 router = APIRouter()
 security = HTTPBearer()
@@ -27,6 +29,7 @@ if not SECRET_KEY:
 
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "30"))
+PASSWORD_RESET_EXPIRE_HOURS = int(os.getenv("PASSWORD_RESET_EXPIRE_HOURS", "1"))
 
 
 class UserSignupRequest(BaseModel):
@@ -69,6 +72,15 @@ class SessionResponse(BaseModel):
     user: UserPublic
 
 
+class PasswordResetRequestBody(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmBody(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=8)
+
+
 class UserProfileResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -98,6 +110,30 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_password_reset_token(user_id: int, email: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_EXPIRE_HOURS)
+    return jwt.encode(
+        {
+            "sub": str(user_id),
+            "email": email,
+            "scope": "password_reset",
+            "exp": expire,
+        },
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+
+
+def decode_password_reset_token(token: str) -> dict:
+    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    if payload.get("scope") != "password_reset":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid reset token",
+        )
+    return payload
 
 
 def _user_public(user: User) -> UserPublic:
@@ -242,17 +278,61 @@ async def logout():
 
 
 @router.post("/password/reset-request")
-async def request_password_reset(email: EmailStr, db: Session = Depends(get_db)):
-    db.query(User).filter(User.email == email).first()
+async def request_password_reset(
+    body: PasswordResetRequestBody,
+    db: Session = Depends(get_db),
+):
+    """
+    Always returns the same message (no email enumeration).
+    Sends reset email when SMTP is configured and the user exists.
+    """
+    user = db.query(User).filter(User.email == body.email).first()
+    email_sent = False
+    dev_reset_link: Optional[str] = None
+
+    if user:
+        token = create_password_reset_token(user.id, user.email)
+        base = (os.getenv("FRONTEND_URL") or "http://localhost:3000").rstrip("/")
+        reset_link = f"{base}/reset-password?token={quote(token, safe='')}"
+        email_sent = send_password_reset_email(user.email, reset_link)
+        if not email_sent and os.getenv("ENVIRONMENT") == "development":
+            dev_reset_link = reset_link
+
     return {
-        "message": "If an account exists with this email, a reset link has been sent",
-        "email_sent": True,
+        "message": "If an account exists for this email, you will receive reset instructions shortly.",
+        "email_sent": email_sent,
+        **({"dev_reset_link": dev_reset_link} if dev_reset_link else {}),
     }
 
 
 @router.post("/password/reset")
-async def reset_password(token: str, new_password: str, db: Session = Depends(get_db)):
-    return {"message": "Password reset successfully", "success": True}
+async def reset_password(body: PasswordResetConfirmBody, db: Session = Depends(get_db)):
+    try:
+        payload = decode_password_reset_token(body.token)
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset link has expired. Request a new one.",
+        )
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset link",
+        )
+
+    user_id = int(payload["sub"])
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid reset link",
+        )
+
+    user.hashed_password = get_password_hash(body.new_password)
+    user.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    return {"message": "Password updated successfully. You can sign in with your new password.", "success": True}
 
 
 @router.post("/dev/create-test-user")

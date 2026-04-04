@@ -60,6 +60,30 @@ def send_email(
         logger.error(f"Failed to send email to {to_email}: {e}")
         return False
 
+
+def send_password_reset_email(to_email: str, reset_link: str) -> bool:
+    """Transactional email with link to set a new password."""
+    subject = "Reset your PostAssistant password"
+    text_content = (
+        f"Hi,\n\nWe received a request to reset your PostAssistant password.\n\n"
+        f"Open this link (valid for 1 hour):\n{reset_link}\n\n"
+        f"If you did not request this, you can ignore this email.\n"
+    )
+    html_content = f"""
+    <!DOCTYPE html>
+    <html><body style="font-family: system-ui, sans-serif; line-height: 1.5; color: #1e293b;">
+      <p>Hi,</p>
+      <p>We received a request to reset your <strong>PostAssistant</strong> password.</p>
+      <p><a href="{reset_link}" style="display: inline-block; background: #1d4ed8; color: #fff;
+        padding: 12px 20px; border-radius: 8px; text-decoration: none; font-weight: 600;">
+        Reset password</a></p>
+      <p style="font-size: 14px; color: #64748b;">Or copy this link:<br/><span style="word-break: break-all;">{reset_link}</span></p>
+      <p style="font-size: 14px; color: #64748b;">This link expires in 1 hour. If you did not request a reset, ignore this email.</p>
+    </body></html>
+    """
+    return send_email(to_email, subject, html_content, text_content=text_content)
+
+
 def send_waitlist_welcome_email(waitlist_entry) -> bool:
     """
     Send welcome email to new waitlist signup

@@ -32,6 +32,9 @@ def _cors_origins() -> list[str]:
     if not raw:
         return [
             "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
             "https://postassistant.vercel.app",
             "https://postassistant.ai",
             "https://postassistant.pt",
