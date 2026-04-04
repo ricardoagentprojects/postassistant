@@ -91,7 +91,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      # Proxy /api/v1 no Next → serviço backend (evita localhost:8000 dentro do container)
+      - API_INTERNAL_URL=http://backend:8000
     volumes:
       - ./frontend:/app
       - /app/node_modules

@@ -25,6 +25,8 @@ class User(Base):
     subscription_status = Column(String(50), nullable=False, default="active")
     monthly_post_limit = Column(Integer, nullable=False, default=10)
     used_posts_this_month = Column(Integer, nullable=False, default=0)
+    stripe_customer_id = Column(String(255), nullable=True, index=True)
+    stripe_subscription_id = Column(String(255), nullable=True, index=True)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)

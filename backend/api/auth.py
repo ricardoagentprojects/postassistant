@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from database.session import get_db
 from schemas.models import User
 from services.email import send_password_reset_email
+from services.usage import count_generations_this_utc_month, effective_monthly_generation_cap
 
 router = APIRouter()
 security = HTTPBearer()
@@ -203,6 +204,7 @@ async def signup(request: UserSignupRequest, db: Session = Depends(get_db)):
         )
 
     now = datetime.now(timezone.utc)
+    free_cap = int(os.getenv("FREE_TIER_MONTHLY_GENERATIONS", "25"))
     user = User(
         email=request.email,
         hashed_password=get_password_hash(request.password),
@@ -211,6 +213,7 @@ async def signup(request: UserSignupRequest, db: Session = Depends(get_db)):
         role=request.role,
         subscription_tier="free",
         subscription_status="active",
+        monthly_post_limit=free_cap,
         created_at=now,
         updated_at=now,
     )
@@ -253,7 +256,12 @@ async def me(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/profile", response_model=UserProfileResponse)
-async def get_profile(current_user: User = Depends(get_current_user)):
+async def get_profile(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    used = count_generations_this_utc_month(db, current_user.id)
+    cap = effective_monthly_generation_cap(current_user)
     return UserProfileResponse(
         id=current_user.id,
         email=current_user.email,
@@ -261,8 +269,8 @@ async def get_profile(current_user: User = Depends(get_current_user)):
         company=current_user.company,
         role=current_user.role,
         subscription_tier=current_user.subscription_tier,
-        monthly_post_limit=current_user.monthly_post_limit,
-        used_posts_this_month=current_user.used_posts_this_month,
+        monthly_post_limit=cap,
+        used_posts_this_month=used,
         created_at=current_user.created_at,
     )
 
@@ -358,6 +366,7 @@ async def create_test_user(db: Session = Depends(get_db)):
         full_name="Test User",
         subscription_tier="pro",
         subscription_status="active",
+        monthly_post_limit=500,
         created_at=now,
         updated_at=now,
     )

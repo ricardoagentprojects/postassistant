@@ -42,3 +42,24 @@ export function apiPatch(path, body) {
 export function apiDelete(path) {
   return apiFetch(path, { method: 'DELETE' });
 }
+
+/** Download CSV or other binary (GET, Bearer token). */
+export async function apiDownloadBlob(path, filename) {
+  const url = `${getPublicApiBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`;
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(url, { method: 'GET', headers });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error((t && t.slice(0, 240)) || `Download failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename || 'export.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}

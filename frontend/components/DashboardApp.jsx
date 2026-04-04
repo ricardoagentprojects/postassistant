@@ -16,6 +16,8 @@ import {
   FileText,
   Send,
   Loader2,
+  FileDown,
+  CreditCard,
 } from 'lucide-react';
 import {
   addMonths,
@@ -29,7 +31,7 @@ import {
   startOfWeek,
   subMonths,
 } from 'date-fns';
-import { apiGet, apiPatch, apiPost } from '../lib/apiClient';
+import { apiDownloadBlob, apiGet, apiPatch, apiPost } from '../lib/apiClient';
 
 const TIMEZONES = [
   'UTC',
@@ -76,6 +78,8 @@ export default function DashboardApp({ user, onLogout, router }) {
   const [scheduleAt, setScheduleAt] = useState('');
   const [scheduleTz, setScheduleTz] = useState('UTC');
   const [scheduleMsg, setScheduleMsg] = useState('');
+  const [exportError, setExportError] = useState('');
+  const [billingMsg, setBillingMsg] = useState('');
 
   const [history, setHistory] = useState([]);
   const [histLoading, setHistLoading] = useState(false);
@@ -99,10 +103,19 @@ export default function DashboardApp({ user, onLogout, router }) {
     setStatsLoading(true);
     const s = await apiGet('/api/v1/content/stats');
     const a = await apiGet('/api/v1/content/list?limit=6');
+    if (s.status === 401 || a.status === 401) {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+      }
+      router?.push?.('/login');
+      setStatsLoading(false);
+      return;
+    }
     if (s.ok && s.data) setStats(s.data);
     if (a.ok && Array.isArray(a.data)) setActivity(a.data);
     setStatsLoading(false);
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     loadStats();
@@ -111,9 +124,18 @@ export default function DashboardApp({ user, onLogout, router }) {
   const loadHistory = useCallback(async () => {
     setHistLoading(true);
     const r = await apiGet('/api/v1/content/list?limit=30&full=true');
+    if (r.status === 401) {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+      }
+      router?.push?.('/login');
+      setHistLoading(false);
+      return;
+    }
     if (r.ok && Array.isArray(r.data)) setHistory(r.data);
     setHistLoading(false);
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     if (tab === 'history') loadHistory();
@@ -130,9 +152,18 @@ export default function DashboardApp({ user, onLogout, router }) {
     const from = format(startOfMonth(calMonth), 'yyyy-MM-dd');
     const to = format(endOfMonth(calMonth), 'yyyy-MM-dd');
     const r = await apiGet(`/api/v1/content/calendar?from_date=${from}&to_date=${to}`);
+    if (r.status === 401) {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+      }
+      router?.push?.('/login');
+      setCalLoading(false);
+      return;
+    }
     if (r.ok && Array.isArray(r.data)) setCalItems(r.data);
     setCalLoading(false);
-  }, [calMonth]);
+  }, [calMonth, router]);
 
   useEffect(() => {
     if (tab === 'calendar') loadCalendar();
@@ -154,6 +185,26 @@ export default function DashboardApp({ user, onLogout, router }) {
     if (router?.replace) {
       router.replace({ pathname: '/dashboard', query: { tab: t } }, undefined, { shallow: true });
     }
+  };
+
+  const handleExportCsv = async () => {
+    setExportError('');
+    try {
+      await apiDownloadBlob('/api/v1/content/export/csv', `postassistant-export-${Date.now()}.csv`);
+    } catch (e) {
+      setExportError(e?.message || 'Export failed');
+    }
+  };
+
+  const handleUpgrade = async () => {
+    setBillingMsg('');
+    const r = await apiPost('/api/v1/billing/create-checkout-session', {});
+    if (r.ok && r.data?.url) {
+      window.location.href = r.data.url;
+      return;
+    }
+    const d = r.data?.detail;
+    setBillingMsg(typeof d === 'string' ? d : 'Checkout is not available (configure Stripe or stay on the free tier).');
   };
 
   const handleGenerate = async (e) => {
@@ -359,7 +410,35 @@ export default function DashboardApp({ user, onLogout, router }) {
                 <p className="text-slate-600 mt-1">
                   Your command center for AI content, scheduling, and momentum.
                 </p>
+                <p className="text-sm text-slate-500 mt-3 max-w-2xl leading-relaxed">
+                  This app does not post to social networks for you. Use the calendar and reminders, then paste or upload
+                  your copy on Instagram, X, or LinkedIn yourself. “Publish” in the app only marks items as done in your
+                  workspace.
+                </p>
               </div>
+
+              {stats && typeof stats.generations_used_this_month === 'number' && (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                    <p className="text-sm font-semibold text-slate-800">AI generations this month (UTC)</p>
+                    <span className="text-sm tabular-nums text-slate-600">
+                      {stats.generations_used_this_month} / {stats.generations_limit}
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-indigo-500 transition-all"
+                      style={{
+                        width: `${Math.min(100, (stats.generations_used_this_month / Math.max(1, stats.generations_limit)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">
+                    Each new saved draft from “Generate” counts toward this cap. Variations/refine share a separate burst
+                    limit per minute.
+                  </p>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
                 {[
@@ -419,6 +498,20 @@ export default function DashboardApp({ user, onLogout, router }) {
                         No content yet — generate your first post in Create.
                       </p>
                     )}
+                    {activity.length > 0 && (
+                      <p className="text-xs text-slate-500 mb-2">
+                        Latest in your library:{' '}
+                        <span className="font-medium text-slate-700">
+                          {activity[0]?.prompt || activity[0]?.content_type || '—'}
+                        </span>
+                        {activity[0]?.created_at && (
+                          <span className="text-slate-400">
+                            {' '}
+                            · {format(new Date(activity[0].created_at), 'MMM d, yyyy HH:mm')}
+                          </span>
+                        )}
+                      </p>
+                    )}
                     {activity.map((row) => (
                       <div
                         key={row.id}
@@ -470,7 +563,29 @@ export default function DashboardApp({ user, onLogout, router }) {
                       <History className="w-4 h-4" />
                       Browse history
                     </button>
+                    <button
+                      type="button"
+                      onClick={handleExportCsv}
+                      className="w-full py-3 px-4 rounded-xl bg-white/15 font-semibold text-sm hover:bg-white/25 border border-white/30 flex items-center justify-center gap-2"
+                    >
+                      <FileDown className="w-4 h-4" />
+                      Export CSV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleUpgrade}
+                      className="w-full py-3 px-4 rounded-xl bg-white/15 font-semibold text-sm hover:bg-white/25 border border-white/30 flex items-center justify-center gap-2"
+                    >
+                      <CreditCard className="w-4 h-4" />
+                      Upgrade (Stripe)
+                    </button>
                   </div>
+                  {exportError && (
+                    <p className="text-xs text-amber-200 mt-3">{exportError}</p>
+                  )}
+                  {billingMsg && (
+                    <p className="text-xs text-indigo-100 mt-3 leading-relaxed">{billingMsg}</p>
+                  )}
                   <p className="text-xs text-indigo-100 mt-6 leading-relaxed">
                     Tip: schedule posts when your audience is most active — drag events on the
                     calendar to reschedule.
@@ -486,6 +601,9 @@ export default function DashboardApp({ user, onLogout, router }) {
                 <h1 className="text-2xl font-bold text-slate-900">Create with AI</h1>
                 <p className="text-slate-600 mt-1">
                   Generate copy, explore variations, refine with instructions, then schedule.
+                </p>
+                <p className="text-sm text-slate-500 mt-2">
+                  After scheduling, publish manually on the real network — we only store your plan in this workspace.
                 </p>
               </div>
 

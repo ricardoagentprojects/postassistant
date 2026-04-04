@@ -1,17 +1,35 @@
-# Content generation, scheduling, and calendar API
+# Content generation, scheduling, and calendar API (JWT-scoped per user)
+import csv
 from datetime import date, datetime, time, timedelta, timezone
+from io import StringIO
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
+from api.auth import get_current_user
 from database.session import get_db
-from schemas.models import Content
+from schemas.models import Content, User
+from services.ai_rate_limit import assert_under_rate_limit
 from services.openai import generate_content, generate_content_variations, refine_content
+from services.usage import (
+    assert_can_generate,
+    count_generations_this_utc_month,
+    effective_monthly_generation_cap,
+)
 
 router = APIRouter()
+
+
+def _scope(db: Session, user_id: int):
+    return db.query(Content).filter(Content.user_id == user_id, Content.status != "deleted")
+
+
+def _owned(db: Session, user_id: int, content_id: int) -> Optional[Content]:
+    return _scope(db, user_id).filter(Content.id == content_id).first()
 
 
 class ContentGenerationRequest(BaseModel):
@@ -52,6 +70,8 @@ class ContentStatsResponse(BaseModel):
     scheduled: int
     published: int
     generated_this_week: int
+    generations_used_this_month: int
+    generations_limit: int
 
 
 class CalendarItemResponse(BaseModel):
@@ -110,8 +130,11 @@ class RefineResponse(BaseModel):
 
 
 @router.get("/stats", response_model=ContentStatsResponse)
-async def content_stats(db: Session = Depends(get_db)):
-    base = db.query(Content).filter(Content.status != "deleted")
+async def content_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    base = _scope(db, current_user.id)
     now = datetime.now(timezone.utc)
     week_ago = now - timedelta(days=7)
 
@@ -120,6 +143,8 @@ async def content_stats(db: Session = Depends(get_db)):
     scheduled = base.filter(Content.status == "scheduled").count()
     published = base.filter(Content.status == "published").count()
     generated_this_week = base.filter(Content.created_at >= week_ago).count()
+    used = count_generations_this_utc_month(db, current_user.id)
+    cap = effective_monthly_generation_cap(current_user)
 
     return ContentStatsResponse(
         total_posts=total_posts,
@@ -127,6 +152,8 @@ async def content_stats(db: Session = Depends(get_db)):
         scheduled=scheduled,
         published=published,
         generated_this_week=generated_this_week,
+        generations_used_this_month=used,
+        generations_limit=cap,
     )
 
 
@@ -135,6 +162,7 @@ async def calendar_range(
     from_date: date,
     to_date: date,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     if to_date < from_date:
         raise HTTPException(status_code=400, detail="to_date must be on or after from_date")
@@ -143,7 +171,7 @@ async def calendar_range(
     end = datetime.combine(to_date, time.max, tzinfo=timezone.utc)
 
     rows = (
-        db.query(Content)
+        _scope(db, current_user.id)
         .filter(
             and_(
                 Content.scheduled_for.isnot(None),
@@ -170,11 +198,63 @@ async def calendar_range(
     ]
 
 
+@router.get("/export/csv")
+async def export_content_csv(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = (
+        _scope(db, current_user.id)
+        .order_by(Content.created_at.desc())
+        .all()
+    )
+    buf = StringIO()
+    w = csv.writer(buf)
+    w.writerow(
+        [
+            "id",
+            "platform",
+            "content_type",
+            "status",
+            "created_at",
+            "scheduled_for",
+            "published_at",
+            "prompt",
+            "body",
+        ]
+    )
+    for c in rows:
+        w.writerow(
+            [
+                c.id,
+                c.platform,
+                c.content_type,
+                c.status,
+                c.created_at.isoformat() if c.created_at else "",
+                c.scheduled_for.isoformat() if c.scheduled_for else "",
+                c.published_at.isoformat() if c.published_at else "",
+                (c.prompt or "").replace("\n", " "),
+                c.body.replace("\n", "\\n"),
+            ]
+        )
+    buf.seek(0)
+    filename = f"postassistant-export-{current_user.id}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/generate", response_model=ContentGenerationResponse)
 async def generate_content_endpoint(
     request: ContentGenerationRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    assert_under_rate_limit(current_user.id)
+    assert_can_generate(db, current_user)
+
     try:
         generated = await generate_content(
             platform=request.platform,
@@ -195,7 +275,7 @@ async def generate_content_endpoint(
 
     now = datetime.now(timezone.utc)
     content_entry = Content(
-        user_id=None,
+        user_id=current_user.id,
         platform=request.platform,
         content_type=request.content_type,
         body=generated["content"],
@@ -222,7 +302,11 @@ async def generate_content_endpoint(
 
 
 @router.post("/variations", response_model=VariationsResponse)
-async def create_variations(request: VariationsRequest):
+async def create_variations(
+    request: VariationsRequest,
+    current_user: User = Depends(get_current_user),
+):
+    assert_under_rate_limit(current_user.id)
     try:
         raw = await generate_content_variations(
             request.base_content,
@@ -248,10 +332,15 @@ async def create_variations(request: VariationsRequest):
 
 
 @router.post("/refine", response_model=RefineResponse)
-async def refine_copy(request: RefineRequest, db: Session = Depends(get_db)):
+async def refine_copy(
+    request: RefineRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_under_rate_limit(current_user.id)
     text = request.text
     if request.content_id is not None:
-        row = db.query(Content).filter(Content.id == request.content_id).first()
+        row = _owned(db, current_user.id, request.content_id)
         if not row:
             raise HTTPException(status_code=404, detail="Content not found")
         text = row.body
@@ -271,8 +360,12 @@ async def refine_copy(request: RefineRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/schedule")
-async def schedule_content(request: ScheduleRequest, db: Session = Depends(get_db)):
-    content = db.query(Content).filter(Content.id == request.content_id).first()
+async def schedule_content(
+    request: ScheduleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    content = _owned(db, current_user.id, request.content_id)
     if not content:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content not found")
 
@@ -302,8 +395,9 @@ async def reschedule_content(
     content_id: int,
     body: RescheduleRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    content = db.query(Content).filter(Content.id == content_id).first()
+    content = _owned(db, current_user.id, content_id)
     if not content:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content not found")
 
@@ -334,8 +428,9 @@ async def list_user_content(
     status_filter: Optional[str] = None,
     full: bool = False,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Content).filter(Content.status != "deleted")
+    query = _scope(db, current_user.id)
 
     if status_filter:
         query = query.filter(Content.status == status_filter)
@@ -364,8 +459,12 @@ async def list_user_content(
 
 
 @router.get("/{content_id}")
-async def get_content(content_id: int, db: Session = Depends(get_db)):
-    content = db.query(Content).filter(Content.id == content_id).first()
+async def get_content(
+    content_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    content = _owned(db, current_user.id, content_id)
     if not content:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content not found")
 
@@ -386,8 +485,12 @@ async def get_content(content_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{content_id}/publish")
-async def publish_content(content_id: int, db: Session = Depends(get_db)):
-    content = db.query(Content).filter(Content.id == content_id).first()
+async def publish_content(
+    content_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    content = _owned(db, current_user.id, content_id)
     if not content:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content not found")
 
@@ -399,7 +502,10 @@ async def publish_content(content_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "message": "Content published successfully",
+        "message": (
+            "Marked as published in your workspace (manual tracking). "
+            "PostAssistant does not post to social networks yet — copy your text and publish on the platform."
+        ),
         "content_id": content_id,
         "published_at": content.published_at.isoformat(),
         "status": "published",
@@ -407,8 +513,12 @@ async def publish_content(content_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/{content_id}")
-async def delete_content(content_id: int, db: Session = Depends(get_db)):
-    content = db.query(Content).filter(Content.id == content_id).first()
+async def delete_content(
+    content_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    content = _owned(db, current_user.id, content_id)
     if not content:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content not found")
 

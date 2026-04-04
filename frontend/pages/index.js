@@ -82,9 +82,9 @@ export default function Home() {
     },
     {
       icon: <BarChart className="w-8 h-8" />,
-      title: 'Performance Analytics',
+      title: 'Workspace insights',
       description:
-        'Track what resonates: engagement signals and posting patterns in one place (expanding in roadmap).',
+        'Counts of drafts, scheduled, and published items in your account — plus CSV export. Network reach/clicks from Instagram or LinkedIn are not wired in yet.',
     },
     {
       icon: <Zap className="w-8 h-8" />,
@@ -157,7 +157,7 @@ export default function Home() {
     {
       question: 'Which platforms are supported?',
       answer:
-        'Today we optimise copy for Instagram, X (Twitter), and LinkedIn. Direct publishing integrations roll out after the beta.',
+        'We generate copy tuned for Instagram, X (Twitter), and LinkedIn. You copy the text and post in each app. OAuth and one-click publish are on the roadmap.',
     },
     {
       question: 'Is there a free trial?',
@@ -295,8 +295,11 @@ export default function Home() {
           Turn ideas into
           <span className="text-indigo-600 block">scheduled social posts</span>
         </h1>
-        <p className="text-lg sm:text-xl text-slate-600 mb-10 max-w-2xl mx-auto">
-          PostAssistant combines AI drafting, variations, and a scheduling calendar so creators and businesses stay consistent without burning out.
+        <p className="text-lg sm:text-xl text-slate-600 mb-6 max-w-2xl mx-auto">
+          PostAssistant is an AI copilot to write and organise posts plus a calendar — you publish on each network yourself. There is no automatic posting to Instagram, X, or LinkedIn yet.
+        </p>
+        <p className="text-sm text-slate-500 mb-10 max-w-xl mx-auto">
+          Honest positioning: copy + calendar + reminders today; billing and deep analytics ship incrementally on the roadmap.
         </p>
 
         <div className="max-w-md mx-auto mb-14">
@@ -396,8 +399,8 @@ export default function Home() {
               },
               {
                 step: '3',
-                title: 'Schedule & ship',
-                body: 'Drop it on the calendar. Automation nudges you when it is time to go live.',
+                title: 'Schedule & publish yourself',
+                body: 'Place it on the calendar for reminders. When it is time, open the network app and paste your copy — we do not auto-post yet.',
               },
             ].map((s) => (
               <div key={s.step} className="text-center">
@@ -456,6 +459,9 @@ export default function Home() {
               </div>
             ))}
           </div>
+          <p className="text-center text-sm text-slate-500 mt-8 max-w-2xl mx-auto">
+            Checkout via Stripe is optional in the app when keys are configured; until then, pricing here is indicative and access is through the waitlist or your account limits.
+          </p>
         </div>
       </section>
 

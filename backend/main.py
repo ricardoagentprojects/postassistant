@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()
 
 from api.auth import router as auth_router
+from api.billing import router as billing_router
 from api.content import router as content_router
 from api.waitlist import router as waitlist_router
 from database.session import engine
@@ -68,8 +69,9 @@ app.add_middleware(
 )
 
 app.include_router(waitlist_router, prefix="/api/v1/waitlist", tags=["waitlist"])
-app.include_router(content_router, prefix="/api/v1/content", tags=["content"])
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
+app.include_router(billing_router, prefix="/api/v1/billing", tags=["billing"])
+app.include_router(content_router, prefix="/api/v1/content", tags=["content"])
 
 
 @app.get("/")
